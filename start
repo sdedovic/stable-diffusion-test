@@ -1,2 +1,2 @@
 #!/usr/bin/env sh
-docker run --gpus all -it --rm -p 8888:8888 -v $(pwd)/notebooks:/tf/notebooks keras
+docker run --gpus all -it --rm -p 8888:8888 -v $(pwd)/cache/datasets:/root/.keras/datasets -v $(pwd)/notebooks:/tf/notebooks keras
