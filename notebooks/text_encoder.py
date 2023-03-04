@@ -21,12 +21,12 @@ from tensorflow.experimental import numpy as tfnp
 
 
 class TextEncoder(keras.Model):
-    def __init__(self, max_length, name=None):
+    def __init__(self, input_dim=49408, max_length=77, name=None):
         tokens = keras.layers.Input(shape=(max_length,), dtype="int32", name="tokens")
         positions = keras.layers.Input(
             shape=(max_length,), dtype="int32", name="positions"
         )
-        x = CLIPEmbedding(49408, 768, max_length)([tokens, positions])
+        x = CLIPEmbedding(input_dim, 768, max_length)([tokens, positions])
         for _ in range(12):
             x = CLIPEncoderLayer()(x)
         embedded = keras.layers.LayerNormalization(epsilon=1e-5)(x)
@@ -75,7 +75,7 @@ class CLIPAttention(keras.layers.Layer):
         self.num_heads = num_heads
         self.causal = causal
         self.head_dim = self.embed_dim // self.num_heads
-        self.scale = self.head_dim**-0.5
+        self.scale = self.head_dim ** -0.5
         self.q_proj = keras.layers.Dense(self.embed_dim)
         self.k_proj = keras.layers.Dense(self.embed_dim)
         self.v_proj = keras.layers.Dense(self.embed_dim)

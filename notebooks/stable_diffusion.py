@@ -30,7 +30,6 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 
-from keras_cv.models.generative.stable_diffusion.clip_tokenizer import SimpleTokenizer
 from keras_cv.models.generative.stable_diffusion.constants import _ALPHAS_CUMPROD
 from keras_cv.models.generative.stable_diffusion.constants import _UNCONDITIONAL_TOKENS
 from keras_cv.models.generative.stable_diffusion.decoder import Decoder
@@ -39,6 +38,8 @@ from keras_cv.models.generative.stable_diffusion.diffusion_model import Diffusio
 # use custom text encoder
 # from keras_cv.models.generative.stable_diffusion.text_encoder import TextEncoder
 from text_encoder import TextEncoder
+from tokenizer import ExtendableTokenizer
+from custom_embed_loader import load as load_embeds
 
 MAX_PROMPT_LENGTH = 77
 
@@ -89,14 +90,21 @@ class StableDiffusion:
         img_width = round(img_width / 128) * 128
         self.img_height = img_height
         self.img_width = img_width
-        self.tokenizer = SimpleTokenizer()
+        self.tokenizer = ExtendableTokenizer()
+
+        custom_embeds = load_embeds()
+        ordered_embeds = []
+        for key in custom_embeds.keys():
+            self.tokenizer.add_token(key)
+            ordered_embeds.append(custom_embeds[key])
 
         # Create models
-        self.text_encoder = TextEncoder(MAX_PROMPT_LENGTH)
+        self.original_encoder = TextEncoder(max_length=MAX_PROMPT_LENGTH)
+        self.custom_encoder = TextEncoder(49408 + len(custom_embeds.keys()), 77, "default")
         self.diffusion_model = DiffusionModel(img_height, img_width, MAX_PROMPT_LENGTH)
         self.decoder = Decoder(img_height, img_width)
         if jit_compile:
-            self.text_encoder.compile(jit_compile=True)
+            self.original_encoder.compile(jit_compile=True)
             self.diffusion_model.compile(jit_compile=True)
             self.decoder.compile(jit_compile=True)
 
@@ -118,17 +126,30 @@ class StableDiffusion:
             origin="https://huggingface.co/fchollet/stable-diffusion/resolve/main/kcv_decoder.h5",
             file_hash="ad350a65cc8bc4a80c8103367e039a3329b4231c2469a1093869a345f55b1962",
         )
-        self.text_encoder.load_weights(text_encoder_weights_fpath)
+        self.original_encoder.load_weights(text_encoder_weights_fpath)
         self.diffusion_model.load_weights(diffusion_model_weights_fpath)
         self.decoder.load_weights(decoder_weights_fpath)
 
+        # Seed custom encoder
+        original_weights = self.original_encoder.layers[2].get_weights()
+        new_token_weights = np.append(original_weights[0], ordered_embeds, axis=0)
+
+        for i, layer in enumerate(self.custom_encoder.layers):
+            print(i, layer.name)
+            if i < 2:
+                continue
+            if i == 2:
+                self.custom_encoder.layers[i].set_weights([new_token_weights, original_weights[1]])
+            else:
+                self.custom_encoder.layers[i].set_weights(self.original_encoder.layers[i].get_weights())
+
     def text_to_image(
-        self,
-        prompt,
-        batch_size=1,
-        num_steps=25,
-        unconditional_guidance_scale=7.5,
-        seed=None,
+            self,
+            prompt,
+            batch_size=1,
+            num_steps=25,
+            unconditional_guidance_scale=7.5,
+            seed=None,
     ):
         encoded_text = self.encode_text(prompt)
 
@@ -171,18 +192,18 @@ class StableDiffusion:
         phrase = inputs + [49407] * (MAX_PROMPT_LENGTH - len(inputs))
         phrase = tf.convert_to_tensor([phrase], dtype=tf.int32)
 
-        context = self.text_encoder.predict_on_batch([phrase, self._get_pos_ids()])
+        context = self.custom_encoder.predict_on_batch([phrase, self._get_pos_ids()])
 
         return context
 
     def generate_image(
-        self,
-        encoded_text,
-        batch_size=1,
-        num_steps=25,
-        unconditional_guidance_scale=7.5,
-        diffusion_noise=None,
-        seed=None,
+            self,
+            encoded_text,
+            batch_size=1,
+            num_steps=25,
+            unconditional_guidance_scale=7.5,
+            diffusion_noise=None,
+            seed=None,
     ):
         """Generates an image based on encoded text.
 
@@ -264,7 +285,7 @@ class StableDiffusion:
             )
             latent = self.diffusion_model.predict_on_batch([latent, t_emb, context])
             latent = unconditional_latent + unconditional_guidance_scale * (
-                latent - unconditional_latent
+                    latent - unconditional_latent
             )
             a_t, a_prev = alphas[index], alphas_prev[index]
             pred_x0 = (latent_prev - math.sqrt(1 - a_t) * latent) / math.sqrt(a_t)
@@ -281,7 +302,7 @@ class StableDiffusion:
         unconditional_tokens = tf.convert_to_tensor(
             [_UNCONDITIONAL_TOKENS], dtype=tf.int32
         )
-        unconditional_context = self.text_encoder.predict_on_batch(
+        unconditional_context = self.custom_encoder.predict_on_batch(
             [unconditional_tokens, self._get_pos_ids()]
         )
 
